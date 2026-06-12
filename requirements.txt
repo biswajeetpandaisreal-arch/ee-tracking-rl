@@ -1,0 +1,6 @@
+mujoco>=3.0
+gymnasium>=0.29
+stable-baselines3>=2.3
+numpy
+matplotlib
+imageio[ffmpeg]  # optional, for videos

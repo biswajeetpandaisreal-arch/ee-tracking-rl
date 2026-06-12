@@ -1,0 +1,9 @@
+trajectory: figure8  episodes/config: 3
+config         | baseline rmse  policy rmse | baseline ndj  policy ndj
+----------------------------------------------------------------------
+clean          |        5.8 mm      24.0 mm |          547        4866
+noise          |        5.9 mm      22.2 mm |        15761       58645
+delay_60ms     |        9.7 mm      23.8 mm |          591       44288
+delay_100ms    |       12.7 mm      24.3 mm |          613       48094
+noise+delay    |        9.8 mm      19.1 mm |        15247       65639
+unreachable    |       56.1 mm      98.6 mm |         3451       17121
