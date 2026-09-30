@@ -12,6 +12,12 @@ error by **26–65 %** versus the classical controller on every trajectory type
 seeds × 10 evaluation episodes. It beats the baseline in 14 of 18
 trajectory × condition cells; the four where it does not are documented below.
 
+![Classical diff-IK vs diff-IK + residual SAC tracking a figure-eight with 100 ms control delay](docs/media/tracking_delay.gif)
+
+*Same trajectory, same seed, 100 ms control delay. Left: the classical controller
+alone lags behind the target. Right: the residual policy uses the trajectory preview
+to act early. Bottom strips: tracking error over time.*
+
 ---
 
 ## Demo
@@ -157,6 +163,11 @@ how a video looks. Baseline and policy run head-to-head on identical seeds.
 
 ## Results
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/results_dark.png">
+  <img alt="Bar chart of tracking RMSE, classical diff-IK vs residual SAC, for five conditions on three trajectory types" src="docs/media/results_light.png">
+</picture>
+
 Policy RMSE, mean ± std over **3 independently trained seeds**, 10 episodes each
 ([full table with smoothness](results/benchmark.md)):
 
@@ -178,6 +189,12 @@ python scripts/benchmark.py --models results/final/sac_residual_s0.zip \
 ```
 
 Per-condition tracking plots for the figure-eight are in `results/comparison/`.
+The 100 ms delay case:
+
+![Tracking plot: 3D path, per-axis position, tracking error and policy actions for the figure-eight with 100 ms delay](results/comparison/policy_delay_100ms.png)
+
+Note the bottom-right panel: several residual channels sit at their ±1 limit for long
+stretches — see limitations.
 
 ---
 
@@ -231,6 +248,9 @@ python scripts/evaluate.py --model results/training/sac_residual_final.zip
 # 4. Multi-seed benchmark over every trajectory x condition
 python scripts/benchmark.py --models <one .zip per seed>
 
+# 5. Regenerate the README GIF and results charts
+python scripts/make_media.py
+
 # Ablations
 python scripts/train.py --max-noise 0.005                    # add noise randomisation
 python scripts/train.py --unreachable-p 0.3                  # add unreachable references
@@ -253,6 +273,7 @@ scripts/evaluate.py          experiment 2: baseline vs policy on one trajectory
 scripts/benchmark.py         experiment 3: multi-seed, all trajectories x conditions
 scripts/eval_utils.py        rollouts, metrics (RMSE, NDJ), plots, video
 scripts/visualise_live.py    live MuJoCo viewer with EE trail and reference path
+scripts/make_media.py        README GIF and results charts (docs/media/)
 results/final/               trained checkpoints, 3 seeds
 results/benchmark.md         headline results table
 results/ablations.md         which training uncertainty helps / hurts
@@ -265,6 +286,12 @@ results/ablations.md         which training uncertainty helps / hurts
 - **Smoothness.** The policy is less smooth than the baseline (NDJ 3–7× higher in
   clean and delayed conditions), despite the output filter and action-rate penalty.
   A larger rate penalty or a jerk term in the reward is the next thing to try.
+- **Action saturation.** Several residual channels spend long stretches at their ±1
+  limit (see the 100 ms tracking plot), which coincides with the largest error
+  spikes. The policy still carries some constant joint bias; likely candidates are
+  drift in the arm's 4-D null space (7 joints, 3-D task) and the residual cap being
+  too tight for delay compensation. Projecting the residual onto the task space, or a
+  bias penalty, are the next experiments.
 - **Clean circle.** On the easiest reference the policy is worse than the baseline
   (3.9 vs 2.5 mm): the baseline already sits near its floor and the residual adds
   small errors of its own.
