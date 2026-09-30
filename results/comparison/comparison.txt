@@ -1,9 +1,9 @@
-trajectory: figure8  episodes/config: 3
-config         | baseline rmse  policy rmse | baseline ndj  policy ndj
-----------------------------------------------------------------------
-clean          |        5.8 mm      24.0 mm |          547        4866
-noise          |        5.9 mm      22.2 mm |        15761       58645
-delay_60ms     |        9.7 mm      23.8 mm |          591       44288
-delay_100ms    |       12.7 mm      24.3 mm |          613       48094
-noise+delay    |        9.8 mm      19.1 mm |        15247       65639
-unreachable    |       56.1 mm      98.6 mm |         3451       17121
+trajectory: figure8  episodes/config: 10
+config         |   baseline rmse     policy rmse | base max  pol max | baseline ndj  policy ndj
+-----------------------------------------------------------------------------------------------
+clean          |    4.5 ± 1.3 mm    2.3 ± 0.2 mm |   7.8mm   4.9mm |          560        1733
+noise          |    4.9 ± 1.1 mm    3.2 ± 0.2 mm |   8.5mm   7.1mm |        18431       41232
+delay_60ms     |    7.5 ± 2.2 mm    2.6 ± 0.4 mm |  13.9mm   5.0mm |          623        6921
+delay_100ms    |    9.7 ± 2.9 mm    6.0 ± 2.1 mm |  18.7mm  14.4mm |          645        5012
+noise+delay    |    7.8 ± 2.0 mm    3.6 ± 0.4 mm |  14.1mm   8.2mm |        17911       35600
+unreachable    |   36.2 ±15.9 mm   38.6 ±16.3 mm |  80.3mm  84.4mm |         3123        5859

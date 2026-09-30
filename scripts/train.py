@@ -54,14 +54,21 @@ def make_env(noise, delay, unreach_p, mode, seed, sample=False):
     return _f
 
 
-# Per-episode uncertainty randomisation (delay ~ U{0..5}, noise ~ U[0,5mm],
-# 30% unreachable) after a short clean warm-up. One stationary training
+# Per-episode delay randomisation (delay ~ U{0..5} steps = 0-100 ms)
+# after a short clean warm-up. One stationary training
 # distribution -> consistent replay buffer, no catastrophic forgetting; easy
 # episodes never leave the distribution.
+#
+# Ablations (results/ablations.md) showed that training on unreachable
+# references teaches a constant joint bias that costs accuracy everywhere
+# else, and that noise randomisation mostly makes the policy more cautious.
+# The default therefore randomises delay only; unreachable references are a
+# geometry problem for the reference generator, not a job for the policy.
+# Use --max-noise / --unreachable-p to reproduce the other configurations.
 PHASES = [
     # (name, fraction, max_noise, max_delay, unreachable_p, sample_per_episode)
     ("warmup",     0.2, 0.000, 0, 0.0, False),
-    ("randomized", 0.8, 0.005, 5, 0.3, True),
+    ("randomized", 0.8, 0.000, 5, 0.0, True),
 ]
 
 
@@ -81,12 +88,24 @@ def main():
     ap.add_argument("--outdir", default="results/training")
     ap.add_argument("--no-curriculum", action="store_true",
                     help="train on the hardest distribution from step 0")
+    # Ablations: override the randomized phase's uncertainty maxima.
+    ap.add_argument("--max-noise", type=float, default=None)
+    ap.add_argument("--max-delay", type=int, default=None)
+    ap.add_argument("--unreachable-p", type=float, default=None)
     args = ap.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
     torch.set_num_threads(args.threads)
 
     phases = PHASES if not args.no_curriculum \
-        else [("randomized", 1.0, 0.005, 5, 0.3, True)]
+        else [("randomized", 1.0, 0.0, 5, 0.0, True)]
+
+    def _override(value, default, sampled):
+        return value if (value is not None and sampled) else default
+    phases = [(n, f,
+               _override(args.max_noise, nz, smp),
+               _override(args.max_delay, dl, smp),
+               _override(args.unreachable_p, up, smp), smp)
+              for (n, f, nz, dl, up, smp) in phases]
 
     model = None
     for i, (name, frac, noise, delay, up, sample) in enumerate(phases):

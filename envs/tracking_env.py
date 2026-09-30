@@ -54,6 +54,7 @@ POS_SCALE = 0.02    # m    — Cartesian errors (2 cm -> 1.0)
 VEL_SCALE = 0.2     # m/s  — Cartesian velocities
 QD_SCALE = 1.0      # rad/s — joint velocities / commands
 OBS_CLIP = 10.0
+DELAY_OBS_SCALE = 5  # steps — measured latency is fed to the policy as delay/5
 
 
 class PandaTrackingEnv(gym.Env):
@@ -71,6 +72,10 @@ class PandaTrackingEnv(gym.Env):
                  # rad/s authority of the policy. The baseline itself only needs
                  # ~0.07 rad/s on these paths, so 0.4 let the residual swamp it.
                  residual_scale: float = 0.15,
+                 # First-order low-pass on the residual: y += (1-beta)(a - y).
+                 # beta=0.5 at 50 Hz is a ~30 ms time constant — removes
+                 # step-to-step chatter without adding much lag.
+                 action_filter: float = 0.5,
                  render_mode: str | None = None,
                  seed: int | None = None):
         super().__init__()
@@ -98,6 +103,7 @@ class PandaTrackingEnv(gym.Env):
         self.randomize = randomize
         self.max_steps = int(episode_seconds / self.dt)
         self.residual_scale = residual_scale
+        self.action_filter = action_filter
         self.render_mode = render_mode
 
         self.baseline = DiffIKController(self.model)
@@ -107,8 +113,10 @@ class PandaTrackingEnv(gym.Env):
         self.action_space = spaces.Box(-1.0, 1.0, shape=(self.nq,),
                                        dtype=np.float32)
         # obs: q(7) qd(7) ee_err(3) ee_vel(3) tgt_vel(3)
-        #      lookahead (9) baseline qdot(7) prev a(7) cmd history (5*7)
-        obs_dim = 7 + 7 + 3 + 3 + 3 + 3 * len(LOOKAHEAD) + 7 + 7 + 5 * 7
+        #      lookahead (9) baseline qdot(7) prev a(7) filtered residual(7)
+        #      cmd history (5*7) measured latency (1)
+        obs_dim = (7 + 7 + 3 + 3 + 3 + 3 * len(LOOKAHEAD) + 7 + 7 + 7
+                   + 5 * 7 + 1)
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,),
                                             dtype=np.float32)
 
@@ -183,6 +191,7 @@ class PandaTrackingEnv(gym.Env):
         self._delay_buf = deque(
             [np.zeros(self.nq) for _ in range(self.delay_steps)])
         self._prev_action = np.zeros(self.nq)
+        self._filt_action = np.zeros(self.nq)
         self._prev_qdot_cmd = np.zeros(self.nq)
         # History of the last issued commands. A real robot always knows its
         # own past commands, so this is deployable (unlike privileged noise/
@@ -224,7 +233,12 @@ class PandaTrackingEnv(gym.Env):
             look / POS_SCALE,
             qdot_ik / QD_SCALE,
             self._prev_action,
+            self._filt_action,
             np.concatenate(list(self._cmd_hist)) / QD_SCALE,
+            # Measured control latency. Without it the policy cannot tell a
+            # 0 ms episode from a 100 ms one and learns a compromise that is
+            # mediocre at both. Real stacks measure this from timestamps.
+            [self.delay_steps / DELAY_OBS_SCALE],
         ])
         return np.clip(obs, -OBS_CLIP, OBS_CLIP).astype(np.float32)
 
@@ -232,12 +246,16 @@ class PandaTrackingEnv(gym.Env):
     def step(self, action):
         action = np.clip(np.asarray(action, dtype=np.float64), -1, 1)
 
+        b = self.action_filter
+        self._filt_action = b * self._filt_action + (1 - b) * action
+
         if self.control_mode == "baseline":
             qdot_cmd = self._last_qdot_ik
         elif self.control_mode == "rl_only":
-            qdot_cmd = 1.5 * action            # full-authority policy
+            qdot_cmd = 1.5 * self._filt_action  # full-authority policy
         else:  # residual
-            qdot_cmd = self._last_qdot_ik + self.residual_scale * action
+            qdot_cmd = (self._last_qdot_ik
+                        + self.residual_scale * self._filt_action)
 
         # Actuation delay (uncertainty source): FIFO of length delay_steps.
         if self.delay_steps > 0:
@@ -266,7 +284,7 @@ class PandaTrackingEnv(gym.Env):
         # 1 cm keeps one at the millimetre level where the baseline already is.
         r_track = np.exp(-err / 0.05) + np.exp(-err / 0.01)
         r_vel = 0.3 * np.exp(-vel_err / 0.3)
-        p_rate = 0.08 * np.sum((action - self._prev_action) ** 2)
+        p_rate = 0.15 * np.sum((action - self._prev_action) ** 2)
         # Residual-magnitude penalty: "do nothing" is the default, so the
         # policy only intervenes where it measurably beats the baseline.
         p_act = (0.01 * np.sum(action ** 2)
