@@ -35,7 +35,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--trajectory", default="figure8",
                     choices=["circle", "figure8", "random"])
-    ap.add_argument("--episodes", type=int, default=5)
+    ap.add_argument("--episodes", type=int, default=10)
     ap.add_argument("--video", action="store_true")
     ap.add_argument("--outdir", default="results/baseline")
     args = ap.parse_args()
@@ -63,7 +63,7 @@ def main():
         print(f"{name:14s} rmse {1000*agg['rmse']:7.1f} mm | "
               f"max {1000*agg['max_err']:7.1f} mm | NDJ {agg['ndj']:9.1f}")
 
-    with open(os.path.join(args.outdir, "summary.txt"), "w") as f:
+    with open(os.path.join(args.outdir, "summary.txt"), "w", encoding="utf-8") as f:
         f.write(f"trajectory: {args.trajectory}  episodes: {args.episodes}\n")
         f.write(f"{'config':14s} {'rmse_mm':>9s} {'max_mm':>9s} {'ndj':>11s}\n")
         for name, agg in rows:

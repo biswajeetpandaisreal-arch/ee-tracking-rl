@@ -1,18 +1,17 @@
 """Train the SAC residual policy.
 
-Curriculum (default):
-  phase 1   clean environment                       (learn to help, not fight, the baseline)
-  phase 2   + observation noise + 60 ms delay       (learn filtering / anticipation)
-  phase 3   + 100 ms delay, unreachable episodes    (learn graceful degradation)
+Curriculum (default, see PHASES):
+  warmup      clean environment (20%)               (learn to help, not fight, the baseline)
+  randomized  per-episode noise / delay / unreachable (80%)
 
-Each phase continues training the same agent on a harder environment
-distribution. Trajectory type is sampled per episode (circle / figure-eight /
+Each phase continues training the same agent (and replay buffer) on the
+next environment distribution. Trajectory type is sampled per episode (circle / figure-eight /
 smooth-random) with randomised centre, size and period, so the policy learns
 *tracking*, not one shape.
 
 Usage:
-    python scripts/train.py                       # full curriculum, ~1.5M steps
-    python scripts/train.py --steps 200000        # quick run
+    python scripts/train.py                       # full curriculum, 600k steps
+    python scripts/train.py --steps 200000 --seed 1   # quick run
     python scripts/train.py --mode rl_only        # ablation: RL from scratch
 """
 
@@ -55,40 +54,67 @@ def make_env(noise, delay, unreach_p, mode, seed, sample=False):
     return _f
 
 
-# Per-episode uncertainty randomisation (delay ~ U{0..5}, noise ~ U[0,5mm],
-# 30% unreachable) after a short clean warm-up. One stationary training
+# Per-episode delay randomisation (delay ~ U{0..5} steps = 0-100 ms)
+# after a short clean warm-up. One stationary training
 # distribution -> consistent replay buffer, no catastrophic forgetting; easy
 # episodes never leave the distribution.
+#
+# Ablations (results/ablations.md) showed that training on unreachable
+# references teaches a constant joint bias that costs accuracy everywhere
+# else, and that noise randomisation mostly makes the policy more cautious.
+# The default therefore randomises delay only; unreachable references are a
+# geometry problem for the reference generator, not a job for the policy.
+# Use --max-noise / --unreachable-p to reproduce the other configurations.
 PHASES = [
     # (name, fraction, max_noise, max_delay, unreachable_p, sample_per_episode)
     ("warmup",     0.2, 0.000, 0, 0.0, False),
-    ("randomized", 0.8, 0.005, 5, 0.3, True),
+    ("randomized", 0.8, 0.000, 5, 0.0, True),
 ]
 
 
 def main():
+    import torch
     from stable_baselines3 import SAC
-    from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, default=1_500_000)
+    ap.add_argument("--steps", type=int, default=600_000)
     ap.add_argument("--n-envs", type=int, default=8)
+    ap.add_argument("--seed", type=int, default=0)
+    # Small MLPs don't benefit from many threads; on CPU, 4 was fastest.
+    ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--mode", default="residual",
                     choices=["residual", "rl_only"])
     ap.add_argument("--outdir", default="results/training")
     ap.add_argument("--no-curriculum", action="store_true",
                     help="train on the hardest distribution from step 0")
+    # Ablations: override the randomized phase's uncertainty maxima.
+    ap.add_argument("--max-noise", type=float, default=None)
+    ap.add_argument("--max-delay", type=int, default=None)
+    ap.add_argument("--unreachable-p", type=float, default=None)
     args = ap.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
+    torch.set_num_threads(args.threads)
 
     phases = PHASES if not args.no_curriculum \
-        else [("randomized", 1.0, 0.005, 5, 0.3, True)]
+        else [("randomized", 1.0, 0.0, 5, 0.0, True)]
+
+    def _override(value, default, sampled):
+        return value if (value is not None and sampled) else default
+    phases = [(n, f,
+               _override(args.max_noise, nz, smp),
+               _override(args.max_delay, dl, smp),
+               _override(args.unreachable_p, up, smp), smp)
+              for (n, f, nz, dl, up, smp) in phases]
 
     model = None
     for i, (name, frac, noise, delay, up, sample) in enumerate(phases):
         steps = int(args.steps * frac)
-        venv = VecMonitor(SubprocVecEnv(
-            [make_env(noise, delay, up, args.mode, seed=100 * i + j,
+        # The env runs ~5k steps/s; SAC gradient updates are the bottleneck,
+        # so in-process envs beat SubprocVecEnv's inter-process overhead.
+        venv = VecMonitor(DummyVecEnv(
+            [make_env(noise, delay, up, args.mode,
+                      seed=1000 * args.seed + 100 * i + j,
                       sample=sample) for j in range(args.n_envs)]))
         if model is None:
             try:
@@ -100,8 +126,9 @@ def main():
                         learning_rate=3e-4, buffer_size=1_000_000,
                         batch_size=512, gamma=0.99, tau=0.005,
                         train_freq=1, gradient_steps=1,
+                        learning_starts=5000,
                         policy_kwargs=dict(net_arch=[256, 256]),
-                        tensorboard_log=tb)
+                        tensorboard_log=tb, seed=args.seed)
         else:
             model.set_env(venv)
         print(f"\n=== phase {i+1}/{len(phases)}: {name} "

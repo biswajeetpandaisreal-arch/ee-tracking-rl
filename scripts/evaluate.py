@@ -35,6 +35,7 @@ def evaluate(control_mode, policy, traj, episodes, cfg, video_path=None):
             save_video(log["frames"], video_path)
         env.close()
     agg = {k: float(np.mean([m[k] for m in ms])) for k in ms[0]}
+    agg["rmse_std"] = float(np.std([m["rmse"] for m in ms]))
     return agg, log
 
 
@@ -47,7 +48,7 @@ def main():
                     choices=["residual", "rl_only"])
     ap.add_argument("--trajectory", default="figure8",
                     choices=["circle", "figure8", "random"])
-    ap.add_argument("--episodes", type=int, default=5)
+    ap.add_argument("--episodes", type=int, default=10)
     ap.add_argument("--video", action="store_true")
     ap.add_argument("--outdir", default="results/comparison")
     args = ap.parse_args()
@@ -55,7 +56,8 @@ def main():
 
     policy = SAC.load(args.model)
 
-    header = (f"{'config':14s} | {'baseline rmse':>13s} {'policy rmse':>12s} | "
+    header = (f"{'config':14s} | {'baseline rmse':>15s} {'policy rmse':>15s} | "
+              f"{'base max':>8s} {'pol max':>8s} | "
               f"{'baseline ndj':>12s} {'policy ndj':>11s}")
     lines = [f"trajectory: {args.trajectory}  episodes/config: {args.episodes}",
              header, "-" * len(header)]
@@ -70,13 +72,15 @@ def main():
                             args.episodes, cfg, video_path=vid)
         plot_tracking(log, f"SAC {args.mode} — {name}",
                       os.path.join(args.outdir, f"policy_{name}.png"))
-        row = (f"{name:14s} | {1000*base['rmse']:10.1f} mm "
-               f"{1000*pol['rmse']:9.1f} mm | "
+        row = (f"{name:14s} | "
+               f"{1000*base['rmse']:6.1f} ±{1000*base['rmse_std']:4.1f} mm "
+               f"{1000*pol['rmse']:6.1f} ±{1000*pol['rmse_std']:4.1f} mm | "
+               f"{1000*base['max_err']:5.1f}mm {1000*pol['max_err']:5.1f}mm | "
                f"{base['ndj']:12.0f} {pol['ndj']:11.0f}")
         lines.append(row)
         print(row)
 
-    with open(os.path.join(args.outdir, "comparison.txt"), "w") as f:
+    with open(os.path.join(args.outdir, "comparison.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"\nplots + table written to {args.outdir}/")
 
