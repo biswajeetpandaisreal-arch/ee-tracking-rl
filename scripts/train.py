@@ -1,18 +1,17 @@
 """Train the SAC residual policy.
 
-Curriculum (default):
-  phase 1   clean environment                       (learn to help, not fight, the baseline)
-  phase 2   + observation noise + 60 ms delay       (learn filtering / anticipation)
-  phase 3   + 100 ms delay, unreachable episodes    (learn graceful degradation)
+Curriculum (default, see PHASES):
+  warmup      clean environment (20%)               (learn to help, not fight, the baseline)
+  randomized  per-episode noise / delay / unreachable (80%)
 
-Each phase continues training the same agent on a harder environment
-distribution. Trajectory type is sampled per episode (circle / figure-eight /
+Each phase continues training the same agent (and replay buffer) on the
+next environment distribution. Trajectory type is sampled per episode (circle / figure-eight /
 smooth-random) with randomised centre, size and period, so the policy learns
 *tracking*, not one shape.
 
 Usage:
-    python scripts/train.py                       # full curriculum, ~1.5M steps
-    python scripts/train.py --steps 200000        # quick run
+    python scripts/train.py                       # full curriculum, 600k steps
+    python scripts/train.py --steps 200000 --seed 1   # quick run
     python scripts/train.py --mode rl_only        # ablation: RL from scratch
 """
 
@@ -67,12 +66,16 @@ PHASES = [
 
 
 def main():
+    import torch
     from stable_baselines3 import SAC
-    from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, default=1_500_000)
+    ap.add_argument("--steps", type=int, default=600_000)
     ap.add_argument("--n-envs", type=int, default=8)
+    ap.add_argument("--seed", type=int, default=0)
+    # Small MLPs don't benefit from many threads; on CPU, 4 was fastest.
+    ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--mode", default="residual",
                     choices=["residual", "rl_only"])
     ap.add_argument("--outdir", default="results/training")
@@ -80,6 +83,7 @@ def main():
                     help="train on the hardest distribution from step 0")
     args = ap.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
+    torch.set_num_threads(args.threads)
 
     phases = PHASES if not args.no_curriculum \
         else [("randomized", 1.0, 0.005, 5, 0.3, True)]
@@ -87,8 +91,11 @@ def main():
     model = None
     for i, (name, frac, noise, delay, up, sample) in enumerate(phases):
         steps = int(args.steps * frac)
-        venv = VecMonitor(SubprocVecEnv(
-            [make_env(noise, delay, up, args.mode, seed=100 * i + j,
+        # The env runs ~5k steps/s; SAC gradient updates are the bottleneck,
+        # so in-process envs beat SubprocVecEnv's inter-process overhead.
+        venv = VecMonitor(DummyVecEnv(
+            [make_env(noise, delay, up, args.mode,
+                      seed=1000 * args.seed + 100 * i + j,
                       sample=sample) for j in range(args.n_envs)]))
         if model is None:
             try:
@@ -100,8 +107,9 @@ def main():
                         learning_rate=3e-4, buffer_size=1_000_000,
                         batch_size=512, gamma=0.99, tau=0.005,
                         train_freq=1, gradient_steps=1,
+                        learning_starts=5000,
                         policy_kwargs=dict(net_arch=[256, 256]),
-                        tensorboard_log=tb)
+                        tensorboard_log=tb, seed=args.seed)
         else:
             model.set_env(venv)
         print(f"\n=== phase {i+1}/{len(phases)}: {name} "

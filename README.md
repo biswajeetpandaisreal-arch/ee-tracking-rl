@@ -68,7 +68,7 @@ baseline's own command, so it can act predictively (compensating delay), filter
 feedback law cannot do.
 
 The residual architecture also keeps the safety story clean: the policy's authority
-is bounded (±0.6 rad/s on top of the baseline), so even an untrained or misbehaving
+is bounded (±0.15 rad/s on top of the baseline), so even an untrained or misbehaving
 policy degrades toward the classical controller rather than toward chaos — the
 property you want before putting a learned policy near hardware.
 
@@ -81,7 +81,7 @@ property you want before putting a learned policy near hardware.
               ┌──────────┴──────────┐
         diff-IK baseline      SAC residual policy
               └──────────┬──────────┘
-               q̇ = q̇_ik + 0.6 · a
+               q̇ = q̇_ik + 0.15 · a
                          │
                   [delay buffer]        ← uncertainty
                          │
@@ -90,22 +90,28 @@ property you want before putting a learned policy near hardware.
               MuJoCo position actuators (500 Hz physics, 50 Hz control)
 ```
 
-**State (43-D).** Joint positions and velocities (7+7), EE position error (3),
+**State (81-D).** Joint positions and velocities (7+7), EE position error (3),
 EE velocity (3), reference velocity (3), lookahead position errors at +0.1/0.2/0.4 s (9),
-the baseline's commanded q̇ (7), previous action (7). The lookahead terms are the
-key design choice: they turn delay compensation from an inference problem into a
-representation problem.
+the baseline's commanded q̇ (7), previous action (7), and the last 5 issued joint
+commands (35). The lookahead terms turn delay compensation from an inference problem
+into a representation problem; the command history lets the policy see what is still
+"in flight" inside the delay buffer.
 
-**Action (7-D).** Joint-velocity residual in [−1, 1], scaled by 0.6 rad/s and added
+Every block is divided by its typical magnitude (2 cm for position errors, 0.2 m/s
+for Cartesian velocities) so the network sees O(1) inputs — otherwise millimetre
+errors are invisible next to joint angles of ~0.6 rad.
+
+**Action (7-D).** Joint-velocity residual in [−1, 1], scaled by 0.15 rad/s and added
 to the baseline command. Velocity-space control (not torque) matches a real arm's
 command interface and is inherently smoother.
 
 **Reward.**
 ```
-r = exp(−‖e‖/5cm) + 0.3·exp(−‖ė‖/0.3) − 0.08·‖Δa‖²
+r = exp(−‖e‖/5cm) + exp(−‖e‖/1cm) + 0.3·exp(−‖ė‖/0.3) − 0.08·‖Δa‖² − 0.01·‖a‖²
 ```
-Dense tracking term, velocity-matching term, and an action-rate penalty as an
-explicit anti-jitter regulariser. The residual-magnitude penalty keeps the policy
+Two-scale tracking term (coarse gradient far from the path, fine gradient at the
+millimetre level), velocity-matching term, an action-rate penalty as an explicit
+anti-jitter regulariser, and a residual-magnitude penalty that keeps the policy
 from fighting the baseline where the baseline is already good.
 
 **Trajectories.** Analytic `pos(t)` / `vel(t)` objects — circle, 1:2 Lissajous
@@ -142,9 +148,9 @@ pip install -r requirements.txt
 # 1. Reproduce the baseline degradation table (fast, no training needed)
 python scripts/run_baseline.py --trajectory figure8
 
-# 2. Train the residual policy (~1.5M steps; overnight on laptop CPU,
-#    a few hours with CUDA. Use --steps 300000 for a quick smoke test.)
-python scripts/train.py
+# 2. Train the residual policy (600k steps by default; use --seed for
+#    repeat runs and --steps 300000 for a quicker run)
+python scripts/train.py --seed 0
 
 # 3. Head-to-head comparison: baseline vs policy, all uncertainty configs
 python scripts/evaluate.py --model results/v3/sac_residual_final.zip --video

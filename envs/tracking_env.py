@@ -47,6 +47,14 @@ _XML = os.path.join(os.path.dirname(__file__), "..", "assets",
 
 LOOKAHEAD = [0.1, 0.2, 0.4]  # seconds of trajectory preview in the obs
 
+# Observation scales: every block is divided by its typical magnitude so the
+# network sees O(1) inputs. Without this, a 2 mm tracking error (0.002) sits
+# next to joint angles of ~0.6 rad and is effectively invisible.
+POS_SCALE = 0.02    # m    — Cartesian errors (2 cm -> 1.0)
+VEL_SCALE = 0.2     # m/s  — Cartesian velocities
+QD_SCALE = 1.0      # rad/s — joint velocities / commands
+OBS_CLIP = 10.0
+
 
 class PandaTrackingEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
@@ -60,7 +68,9 @@ class PandaTrackingEnv(gym.Env):
                  sample_uncertainty: bool = False,  # treat noise/delay as maxima, sample per episode
                  randomize: bool = True,
                  episode_seconds: float = 15.0,
-                 residual_scale: float = 0.4,      # rad/s authority of the policy
+                 # rad/s authority of the policy. The baseline itself only needs
+                 # ~0.07 rad/s on these paths, so 0.4 let the residual swamp it.
+                 residual_scale: float = 0.15,
                  render_mode: str | None = None,
                  seed: int | None = None):
         super().__init__()
@@ -96,8 +106,6 @@ class PandaTrackingEnv(gym.Env):
         # --- spaces -----------------------------------------------------
         self.action_space = spaces.Box(-1.0, 1.0, shape=(self.nq,),
                                        dtype=np.float32)
-        # obs: q(7) qd(7) ee_err(3) ee_vel(3) tgt_vel(3)
-        #      lookahead errors (3*len(LOOKAHEAD)) baseline qdot(7) prev a(7)
         # obs: q(7) qd(7) ee_err(3) ee_vel(3) tgt_vel(3)
         #      lookahead (9) baseline qdot(7) prev a(7) cmd history (5*7)
         obs_dim = 7 + 7 + 3 + 3 + 3 + 3 * len(LOOKAHEAD) + 7 + 7 + 5 * 7
@@ -208,16 +216,17 @@ class PandaTrackingEnv(gym.Env):
         self._last_qdot_ik = qdot_ik
 
         obs = np.concatenate([
-            q, qd,
-            tgt - ee,
-            ee_vel,
-            tgt_v,
-            look,
-            qdot_ik,
+            q,
+            qd / QD_SCALE,
+            (tgt - ee) / POS_SCALE,
+            ee_vel / VEL_SCALE,
+            tgt_v / VEL_SCALE,
+            look / POS_SCALE,
+            qdot_ik / QD_SCALE,
             self._prev_action,
-            np.concatenate(list(self._cmd_hist)) / 1.5,  # normalised
-        ]).astype(np.float32)
-        return obs
+            np.concatenate(list(self._cmd_hist)) / QD_SCALE,
+        ])
+        return np.clip(obs, -OBS_CLIP, OBS_CLIP).astype(np.float32)
 
     # ------------------------------------------------------------------
     def step(self, action):
@@ -253,10 +262,15 @@ class PandaTrackingEnv(gym.Env):
         err = np.linalg.norm(tgt - ee)
         vel_err = np.linalg.norm(self.ref_vel(self.t) - self._ee_vel())
 
-        r_track = np.exp(-err / 0.05)             # 1 at zero error
+        # Two length scales: 5 cm keeps a gradient when far off the path,
+        # 1 cm keeps one at the millimetre level where the baseline already is.
+        r_track = np.exp(-err / 0.05) + np.exp(-err / 0.01)
         r_vel = 0.3 * np.exp(-vel_err / 0.3)
         p_rate = 0.08 * np.sum((action - self._prev_action) ** 2)
-        p_act = 0.0
+        # Residual-magnitude penalty: "do nothing" is the default, so the
+        # policy only intervenes where it measurably beats the baseline.
+        p_act = (0.01 * np.sum(action ** 2)
+                 if self.control_mode == "residual" else 0.0)
         reward = r_track + r_vel - p_rate - p_act
 
         self._prev_action = action.copy()
